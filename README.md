@@ -96,13 +96,3 @@ python main.py --dataset brca --method more --file_dir BRCA --num_class <number_
 
 - Model weights are saved under `dataset/models/`.
 - Plots (including combined training/testing metrics and the confusion matrix) are saved in the `method_dataset_plots/` directory.
-
-## Combined Plot for Metrics
-
-Both frameworks now include a combined plot showing training/testing losses, accuracies, and F1 scores (each in separate subplots). All plots are saved in the `plots/` directory.
-
----
-
-## Contact
-
-If you have questions or encounter issues, please open an issue in the repository or contact the project maintainer.
