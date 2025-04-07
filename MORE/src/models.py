@@ -199,20 +199,53 @@ class HGNN_conv(nn.Module):
         x = torch.matmul(G, x)
         return x
 
+
 class HGNN(nn.Module):
     def __init__(self, in_ch, n_class, n_hid, dropout=0.5):
         super(HGNN, self).__init__()
         self.dropout = dropout
         self.hgc1 = HGNN_conv(in_ch, n_hid[0])
         self.hgc2 = HGNN_conv(n_hid[0], n_hid[1])
+
+        # Decoder to reconstruct input from embedding
+        self.decoder = nn.Sequential(
+            nn.Linear(n_hid[1], in_ch)
+        )
+
+    def forward(self, x, G, return_reconstruction=False, return_cluster=False):
+        x1 = self.hgc1(x, G)
+        x1 = F.leaky_relu(x1, 0.25)
+        x1 = F.dropout(x1, self.dropout)
+        x2 = self.hgc2(x1, G)
+        x2 = F.leaky_relu(x2, 0.25)
+
+        # Reconstruction branch
+        reconstruction = self.decoder(x2) if return_reconstruction else None
+
+        # Clustering branch
+        if return_cluster:
+            norm_x = x2 / (1e-8 + x2.norm(dim=1, keepdim=True))
+            q = 1.0 / (1.0 + torch.cdist(norm_x, norm_x).pow(2))
+            q = q / q.sum(dim=1, keepdim=True)
+        else:
+            q = None
+
+        return x2, reconstruction, q
+
+# class HGNN(nn.Module):
+#     def __init__(self, in_ch, n_class, n_hid, dropout=0.5):
+#         super(HGNN, self).__init__()
+#         self.dropout = dropout
+#         self.hgc1 = HGNN_conv(in_ch, n_hid[0])
+#         self.hgc2 = HGNN_conv(n_hid[0], n_hid[1])
         
-    def forward(self, x, G):
-        x = self.hgc1(x, G)
-        x = F.leaky_relu(x, 0.25)
-        x = F.dropout(x, self.dropout)
-        x = self.hgc2(x, G)
-        x = F.leaky_relu(x, 0.25)
-        return x
+#     def forward(self, x, G):
+#         x = self.hgc1(x, G)
+#         x = F.leaky_relu(x, 0.25)
+#         x = F.dropout(x, self.dropout)
+#         x = self.hgc2(x, G)
+#         x = F.leaky_relu(x, 0.25)
+#         return x
 
 def init_model_dict(input_data_dims, hyperpm, num_view, num_class, dim_list, dim_he_list, dim_hc,cross_modal=True):
     model_dict = {}
