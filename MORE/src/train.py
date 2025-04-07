@@ -14,33 +14,70 @@ args = None
 def train_epoch(num_cls, data_list, adj_list, label, one_hot_label, sample_weight, model_dict, optim_dict, train_MOSA=True):
     loss_dict = {}
     criterion = nn.CrossEntropyLoss(reduction='none')
-    
+
+    ###### --- ADD CONTRASTIVE LOSS SETUP --- ######
+    # recon_criterion = nn.MSELoss()
+    temperature = 0.5
+    def contrastive_loss_fn(z, labels):
+        z = F.normalize(z, dim=1)
+        sim_matrix = torch.matmul(z, z.T) / temperature
+        labels = labels.contiguous().view(-1, 1)
+        mask = torch.eq(labels, labels.T).float().to(device)
+
+        exp_sim = torch.exp(sim_matrix) * (1 - torch.eye(labels.size(0)).to(device))
+        log_prob = sim_matrix - torch.log(exp_sim.sum(dim=1, keepdim=True) + 1e-8)
+        loss = - (mask * log_prob).sum(dim=1) / mask.sum(dim=1)
+        return loss.mean()
+    ################################################
+
     for m in model_dict:
         model_dict[m].train()
     num_view = len(data_list)
-    
+
+    ####### Changed to use contrastive loss ########
     for i in range(num_view):
         optim_dict[f"C{i+1}"].zero_grad()
-        ci = model_dict[f"C{i+1}"](model_dict[f"E{i+1}"](data_list[i], adj_list))
-        loss = torch.mean(criterion(ci, label) * sample_weight)
+        
+        embeddings = model_dict[f"E{i+1}"](data_list[i], adj_list)
+        logits = model_dict[f"C{i+1}"](embeddings)
+        # Cross-entropy loss
+        ce_loss = torch.mean(criterion(logits, label) * sample_weight)
+        # Contrastive loss
+        cont_loss = contrastive_loss_fn(embeddings, label)
+        # Add decoder here for reconstruction and add MSE loss
+        # recon_loss = torch.tensor(0.0).to(device)
+
+        # Combine losses
+        alpha, beta, gamma = 1.0, 0.5, 0.1
+        # loss = alpha * ce_loss + beta * cont_loss + gamma * recon_loss
+        loss = alpha * ce_loss + beta * cont_loss
+        
         loss.backward()
         optim_dict[f"C{i+1}"].step()
         loss_dict[f"C{i+1}"] = loss.detach().cpu().item()
-        
+    ################################################
+    
+    ######### Original Loss Function Loop ##########
+    # for i in range(num_view):
+    #     optim_dict[f"C{i+1}"].zero_grad()
+    #     ci = model_dict[f"C{i+1}"](model_dict[f"E{i+1}"](data_list[i], adj_list))
+    #     loss = torch.mean(criterion(ci, label) * sample_weight)
+    #     loss.backward()
+    #     optim_dict[f"C{i+1}"].step()
+    #     loss_dict[f"C{i+1}"] = loss.detach().cpu().item()
+    ################################################
+
     if train_MOSA and num_view >= 2:
         optim_dict["C"].zero_grad()
-        # Get Encodings of each view
         ci_list = [model_dict[f"E{i+1}"](data_list[i], adj_list) for i in range(num_view)]
-        # Concatenate Encodings
         new_data = torch.cat(ci_list, dim=1)
-        # Pass to the Transformer
         c = model_dict["C"](new_data)
-        
-        loss = torch.mean(criterion(c, label) * sample_weight)
+        ce_loss = torch.mean(criterion(c, label) * sample_weight)
+        loss = ce_loss  # Modify as above if contrastive loss on combined rep is needed
         loss.backward()
         optim_dict["C"].step()
         loss_dict["C"] = loss.detach().cpu().item()
-        
+
     return loss_dict
 
 def test_epoch(num_cls, data_list, adj_list, idx, model_dict, return_logits=False):
