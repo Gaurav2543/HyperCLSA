@@ -6,7 +6,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from sklearn.metrics import accuracy_score, f1_score, classification_report, confusion_matrix
-from utils import logger, one_hot_tensor, cal_sample_weight, save_model_dict, prepare_trte_data, construct_H_with_KNN, hyperedge_concat, generate_G_from_H, device
+from utils import logger, one_hot_tensor, cal_sample_weight, save_model_dict, prepare_trte_data, construct_H_with_KNN, hyperedge_concat, generate_G_from_H, device, prepare_pathway_dict, construct_H_with_pathways
+import pandas as pd
 
 # Global variable to be set from main.py (to use command-line arguments inside train_test)
 args = None
@@ -65,19 +66,66 @@ def test_epoch(num_cls, data_list, adj_list, idx, model_dict, return_logits=Fals
         prob = F.softmax(c, dim=1).detach().cpu().numpy()
         return prob
 
-def gen_trte_adj_mat(data_tr_list, data_te_list, trte_idx, k_neigs):
+# def gen_trte_adj_mat(data_tr_list, data_te_list, trte_idx, k_neigs):
+#     H_tr = []
+#     H_te = []
+#     for i in range(len(data_tr_list)):
+#         logger.info("Constructing hypergraph incidence matrix for view {}! (This may take several minutes...)".format(i+1))
+#         H_1 = construct_H_with_KNN(data_tr_list[i], k_neigs, split_diff_scale=False, is_probH=True, m_prob=1)
+#         H_tr.append(H_1)
+#         H_2 = construct_H_with_KNN(data_te_list[i], k_neigs, split_diff_scale=False, is_probH=True, m_prob=1)
+#         H_te.append(H_2)
+#     H_train = hyperedge_concat(H_tr[0], H_tr[1], H_tr[2])
+#     H_test  = hyperedge_concat(H_te[0], H_te[1], H_te[2])
+#     adj_train_list = generate_G_from_H(H_train, variable_weight=False)
+#     adj_test_list  = generate_G_from_H(H_test, variable_weight=False)
+#     return adj_train_list, adj_test_list
+
+def gen_trte_adj_mat(data_tr_list, data_te_list, trte_idx, k_neigs, pathway_dict=None, feature_names=None):
     H_tr = []
     H_te = []
     for i in range(len(data_tr_list)):
-        logger.info("Constructing hypergraph incidence matrix for view {}! (This may take several minutes...)".format(i+1))
-        H_1 = construct_H_with_KNN(data_tr_list[i], k_neigs, split_diff_scale=False, is_probH=True, m_prob=1)
+        logger.info(f"Constructing hypergraph incidence matrix for view {i+1}")
+        
+        # Special handling for first view (typically mRNA)
+        if pathway_dict and i == 0 and feature_names:
+            # Use pathway-based construction for mRNA
+            H_1 = construct_H_with_pathways(
+                data_tr_list[i], 
+                pathway_dict, 
+                feature_names[0],  # Feature names for this view
+                k_neigs
+            )
+            H_2 = construct_H_with_pathways(
+                data_te_list[i], 
+                pathway_dict, 
+                feature_names[0], 
+                k_neigs
+            )
+        else:
+            # Use standard k-NN for other views
+            H_1 = construct_H_with_KNN(
+                data_tr_list[i], 
+                k_neigs, 
+                is_probH=True, 
+                m_prob=1
+            )
+            H_2 = construct_H_with_KNN(
+                data_te_list[i], 
+                k_neigs, 
+                is_probH=True, 
+                m_prob=1
+            )
+        
         H_tr.append(H_1)
-        H_2 = construct_H_with_KNN(data_te_list[i], k_neigs, split_diff_scale=False, is_probH=True, m_prob=1)
         H_te.append(H_2)
+    
     H_train = hyperedge_concat(H_tr[0], H_tr[1], H_tr[2])
-    H_test  = hyperedge_concat(H_te[0], H_te[1], H_te[2])
+    H_test = hyperedge_concat(H_te[0], H_te[1], H_te[2])
+    
     adj_train_list = generate_G_from_H(H_train, variable_weight=False)
-    adj_test_list  = generate_G_from_H(H_test, variable_weight=False)
+    adj_test_list = generate_G_from_H(H_test, variable_weight=False)
+    
     return adj_train_list, adj_test_list
 
 def train_test(data_folder, view_list, num_class, lr_e_pretrain, lr_e, lr_c, num_epoch_pretrain, num_epoch, k_neigs,cross_m=True):
@@ -97,6 +145,17 @@ def train_test(data_folder, view_list, num_class, lr_e_pretrain, lr_e, lr_c, num
     hyperpm.n_head = 4
     hyperpm.nmodal = len(view_list)
     
+    # prepare pathway database
+    pathway_dict = prepare_pathway_dict(data_folder, file='./src/reactome_pathways.json')
+
+    # Basic stats about the pathways
+    pathway_sizes = [len(genes) for genes in pathway_dict.values()]
+    avg_genes_per_pathway = sum(pathway_sizes) / len(pathway_sizes)
+    print(f"No. of pathways: {len(pathway_dict.keys())}")
+    print(f"Average genes per pathway: {avg_genes_per_pathway:.2f}")
+    print(f"Smallest pathway: {min(pathway_sizes)} genes")
+    print(f"Largest pathway: {max(pathway_sizes)} genes")
+    
     # Load data
     data_tr_list, data_te_list, trte_idx, labels_trte = prepare_trte_data(data_folder, view_list)
     labels_tr_tensor = torch.LongTensor(labels_trte[trte_idx["tr"]]).to(device)
@@ -104,7 +163,10 @@ def train_test(data_folder, view_list, num_class, lr_e_pretrain, lr_e, lr_c, num
     sample_weight_tr = torch.FloatTensor(cal_sample_weight(labels_trte[trte_idx["tr"]], num_class)).to(device)
     
     # Build adjacency matrices using provided k_neigs
-    adj_tr_list, adj_te_list = gen_trte_adj_mat(data_tr_list, data_te_list, trte_idx, k_neigs)
+    feature_file = f'./{data_folder}/1_featname.csv'
+    feature_df = pd.read_csv(feature_file, header=None)
+    features = feature_df[0].tolist()
+    adj_tr_list, adj_te_list = gen_trte_adj_mat(data_tr_list, data_te_list, trte_idx, k_neigs, pathway_dict, features)
     dim_list = [x.shape[1] for x in data_tr_list]
     input_data_dim = [args.dim_he_list[-1]] * num_view  # using command-line provided hidden dims for transformer
     

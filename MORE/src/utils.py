@@ -4,6 +4,10 @@ import copy
 import numpy as np
 import torch
 import logging
+import json
+import sys
+import pandas as pd
+from pathway_utils import filter_pathways_by_gene_list, convert_gene_symbols_to_ensembl
 
 # ----------------------------
 # Logging configuration
@@ -177,3 +181,112 @@ def load_model_dict(folder, model_dict):
             logger.info("WARNING: Module {} from model_dict is not loaded!".format(module))
         model_dict[module].to(device)
     return model_dict
+
+# prepare Pathway Functions
+def prepare_pathway_dict(data_folder, file='./src/reactome_pathways.json'):
+    """
+    Prepares the pathway dictionary by loading from a JSON file and filtering based on gene list.
+    """
+    # Check if pathway file exists
+    if not os.path.exists(file):
+        logger.info(f"Pathway file {file} not found. Please run pathway_utils.py first.")
+        return {}
+    
+    # Load pathway dictionary
+    try:
+        with open(file, 'r') as f:
+            pathway_dict = json.load(f)
+        logger.info(f"Loaded {len(pathway_dict)} pathways from {file}")
+    except Exception as e:
+        logger.info(f"Error loading pathway file: {e}")
+        return {}
+    
+    feature_file = f'./{data_folder}/1_featname.csv'
+
+    # Check if feature file exists
+    if not os.path.exists(feature_file):
+        logger.info(f"Feature file {feature_file} not found.")
+        return pathway_dict
+    
+    # Read ENSEMBL IDs from feature file
+    try:
+        feature_df = pd.read_csv(feature_file, header=None)
+        if (data_folder == "BRCA"):
+            #preprocess GeneSymbol|GeneID into list of GeneSymbols
+            features = feature_df[0].tolist()
+            gene_symbols = [item.split('|')[0] for item in features]
+            symbols_to_ensembl = convert_gene_symbols_to_ensembl(gene_symbols)
+            ensembl_ids = list(symbols_to_ensembl.values())
+        else:
+            ensembl_ids_with_version = feature_df[0].tolist()
+            ensembl_ids = [eid.split('.')[0] for eid in ensembl_ids_with_version]
+        
+        logger.info(f"Loaded {len(ensembl_ids)} ENSEMBL IDs from {feature_file}")
+        
+        filtered_dict = filter_pathways_by_gene_list(pathway_dict, ensembl_ids)
+        
+        pathway_ids = list(filtered_dict.keys())
+        if pathway_ids:
+            example_pathway_id = pathway_ids[0]
+            example_genes = filtered_dict[example_pathway_id][:5]  # Show first 5 genes
+            logger.info(f"Example pathway: {example_pathway_id} with genes: {example_genes}")
+        
+        return filtered_dict
+        
+    except Exception as e:
+        logger.info(f"Error processing feature file: {e}")
+        return pathway_dict
+
+def construct_H_with_pathways(X, pathway_dict, feature_names, k_neigs=5):
+    """
+    Construct hypergraph incidence matrix using both pathway information and k-nearest neighbors
+    
+    Args:
+    - X: Input feature tensor
+    - pathway_dict: Dictionary of pathways with gene ENSEMBL IDs
+    - feature_names: List of feature names corresponding to the input tensor
+    - k_neigs: Number of neighbors to connect in traditional k-NN approach
+    
+    Returns:
+    - Hypergraph incidence matrix
+    """
+    n_obj = X.shape[0]
+    dis_mat = Eu_dis(X)
+    
+    # Create a traditional k-NN hypergraph
+    H_knn = construct_H_with_KNN(X, k_neigs, is_probH=True)
+    
+    # Initialize pathway-based hypergraph
+    H_pathway = np.zeros((n_obj, n_obj))
+    
+    # Preprocess feature names to extract gene identifiers
+    if feature_names and '|' in feature_names[0]:
+        # BRCA-like dataset with "GeneSymbol|GeneID" format
+        gene_symbols = [name.split('|')[0] for name in feature_names]
+        
+        # Convert gene symbols to ENSEMBL IDs
+        from pathway_utils import convert_gene_symbols_to_ensembl
+        symbols_to_ensembl = convert_gene_symbols_to_ensembl(gene_symbols)
+        gene_ids = list(symbols_to_ensembl.values())
+    else:
+        # Other datasets with direct ENSEMBL IDs
+        gene_ids = [eid.split('.')[0] for eid in feature_names]
+    
+    # Create pathway-based connections
+    for pathway, pathway_genes in pathway_dict.items():
+        # Find indices of genes in the current feature set
+        gene_indices = [i for i, gene_id in enumerate(gene_ids) if gene_id in pathway_genes]
+        
+        # If multiple genes from the same pathway are present
+        if len(gene_indices) > 1:
+            for i in range(len(gene_indices)):
+                for j in range(i+1, len(gene_indices)):
+                    idx1, idx2 = gene_indices[i], gene_indices[j]
+                    # Use inverse distance as connection weight
+                    dist = dis_mat[idx1, idx2]
+                    H_pathway[idx1, idx2] = np.exp(-dist)
+                    H_pathway[idx2, idx1] = np.exp(-dist)
+    
+    # Combine k-NN and pathway hypergraphs
+    H_combined = H_knn + H_pathway
+    return H_combined
