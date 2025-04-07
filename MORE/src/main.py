@@ -30,6 +30,8 @@ if __name__ == "__main__":
                         help='List of views.')
     parser.add_argument('--num_epoch_pretrain', '-nep', type=int, default=500,
                         help='Number of pretrain epochs, default: 500.')
+    parser.add_argument('--cross_m', '-cm', type=bool, default=True,
+                        help='Enable cross-modal attention, default: True.')
     args = parser.parse_args()
 
     # Set seed
@@ -41,4 +43,4 @@ if __name__ == "__main__":
     # Start training/testing using unified parameters
     train.train_test(args.file_dir, args.view_list, args.num_class,
                      args.lr_e_pretrain, args.lr_e, args.lr_c,
-                     args.num_epoch_pretrain, args.num_epoch, args.k_neigs)
+                     args.num_epoch_pretrain, args.num_epoch, args.k_neigs,args.cross_m)

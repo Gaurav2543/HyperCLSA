@@ -90,6 +90,7 @@ python main.py --dataset brca --method more --file_dir BRCA --num_class <number_
 - `--num_class`: Number of classes in your dataset.
 - `--dim_he_list`: Hidden dimensions for the HGCN modules.
 - `--view_list`: List of view identifiers (matching your CSV filenames).
+- `--crss_m` : Use updated Hierarchial Attn (True/False)
 - Adjust epochs, learning rates, and other parameters as needed.
 
 **Output:**

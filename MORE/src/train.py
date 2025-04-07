@@ -14,9 +14,11 @@ args = None
 def train_epoch(num_cls, data_list, adj_list, label, one_hot_label, sample_weight, model_dict, optim_dict, train_MOSA=True):
     loss_dict = {}
     criterion = nn.CrossEntropyLoss(reduction='none')
+    
     for m in model_dict:
         model_dict[m].train()
     num_view = len(data_list)
+    
     for i in range(num_view):
         optim_dict[f"C{i+1}"].zero_grad()
         ci = model_dict[f"C{i+1}"](model_dict[f"E{i+1}"](data_list[i], adj_list))
@@ -24,29 +26,39 @@ def train_epoch(num_cls, data_list, adj_list, label, one_hot_label, sample_weigh
         loss.backward()
         optim_dict[f"C{i+1}"].step()
         loss_dict[f"C{i+1}"] = loss.detach().cpu().item()
+        
     if train_MOSA and num_view >= 2:
         optim_dict["C"].zero_grad()
+        # Get Encodings of each view
         ci_list = [model_dict[f"E{i+1}"](data_list[i], adj_list) for i in range(num_view)]
+        # Concatenate Encodings
         new_data = torch.cat(ci_list, dim=1)
+        # Pass to the Transformer
         c = model_dict["C"](new_data)
+        
         loss = torch.mean(criterion(c, label) * sample_weight)
         loss.backward()
         optim_dict["C"].step()
         loss_dict["C"] = loss.detach().cpu().item()
+        
     return loss_dict
 
 def test_epoch(num_cls, data_list, adj_list, idx, model_dict, return_logits=False):
     for m in model_dict:
         model_dict[m].eval()
+        
     num_view = len(data_list)
     ci_list = []
+    
     for i in range(num_view):
         ci_list.append(model_dict[f"E{i+1}"](data_list[i], adj_list))
+        
     if num_view >= 2:
         new_data = torch.cat(ci_list, dim=1)
         c = model_dict["C"](new_data)
     else:
         c = ci_list[0]
+        
     if return_logits:
         return c
     else:
@@ -68,7 +80,7 @@ def gen_trte_adj_mat(data_tr_list, data_te_list, trte_idx, k_neigs):
     adj_test_list  = generate_G_from_H(H_test, variable_weight=False)
     return adj_train_list, adj_test_list
 
-def train_test(data_folder, view_list, num_class, lr_e_pretrain, lr_e, lr_c, num_epoch_pretrain, num_epoch, k_neigs):
+def train_test(data_folder, view_list, num_class, lr_e_pretrain, lr_e, lr_c, num_epoch_pretrain, num_epoch, k_neigs,cross_m=True):
     test_interval = 50  
     model_folder = os.path.join(data_folder, 'models')
     if not os.path.exists(model_folder):
@@ -98,7 +110,7 @@ def train_test(data_folder, view_list, num_class, lr_e_pretrain, lr_e, lr_c, num
     
     # Initialize model dictionary with provided hyperparameters
     from models import init_model_dict
-    model_dict = init_model_dict(input_data_dim, hyperpm, num_view, num_class, dim_list, args.dim_he_list, dim_hvcdn)
+    model_dict = init_model_dict(input_data_dim, hyperpm, num_view, num_class, dim_list, args.dim_he_list, dim_hvcdn,cross_modal=cross_m)
     for m in model_dict:
         model_dict[m].to(device)
     
