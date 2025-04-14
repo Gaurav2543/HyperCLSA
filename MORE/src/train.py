@@ -33,64 +33,6 @@ def compute_pathway_loss(H, A, device):
     pathway_loss = torch.trace(torch.matmul(H.t(), torch.matmul(L, H)))
     return pathway_loss
 
-# def train_epoch(num_cls, data_list, adj_list, label, one_hot_label, sample_weight, model_dict, optim_dict, train_MOSA=True):
-#     loss_dict = {}
-#     criterion = nn.CrossEntropyLoss(reduction='none')
-#     recon_criterion = nn.MSELoss()
-#     temperature = 0.5
-
-#     def contrastive_loss_fn(z, labels):
-#         z = F.normalize(z, dim=1)
-#         sim_matrix = torch.matmul(z, z.T) / temperature
-#         labels = labels.contiguous().view(-1, 1)
-#         mask = torch.eq(labels, labels.T).float().to(device)
-#         exp_sim = torch.exp(sim_matrix) * (1 - torch.eye(labels.size(0)).to(device))
-#         log_prob = sim_matrix - torch.log(exp_sim.sum(dim=1, keepdim=True) + 1e-8)
-#         loss = - (mask * log_prob).sum(dim=1) / mask.sum(dim=1)
-#         return loss.mean()
-
-#     def target_distribution(q):
-#         weight = q ** 2 / q.sum(0)
-#         return (weight.t() / weight.sum(1)).t()
-
-#     for m in model_dict:
-#         model_dict[m].train()
-#     num_view = len(data_list)
-
-#     for i in range(num_view):
-#         optim_dict[f"C{i+1}"].zero_grad()
-#         embeddings, recons, q = model_dict[f"E{i+1}"](data_list[i], adj_list, return_reconstruction=True, return_cluster=True)
-#         logits = model_dict[f"C{i+1}"](embeddings)
-#         ce_loss = torch.mean(criterion(logits, label) * sample_weight)
-#         cont_loss = contrastive_loss_fn(embeddings, label)
-#         recon_loss = recon_criterion(recons, data_list[i])
-#         if q is not None:
-#             p = target_distribution(q).detach()
-#             dec_loss = F.kl_div(q.log(), p, reduction='batchmean')
-#         else:
-#             dec_loss = torch.tensor(0.0).to(device)
-
-#         alpha, beta, gamma, delta = 1.0, 0.5, 0.0, 0.0
-#         # alpha, beta, gamma, delta = 1.0, 0.5, 0.1, 0.2
-#         loss = alpha * ce_loss + beta * cont_loss + gamma * recon_loss + delta * dec_loss
-#         loss.backward()
-#         optim_dict[f"C{i+1}"].step()
-#         loss_dict[f"C{i+1}"] = loss.detach().cpu().item()
-
-#     if train_MOSA and num_view >= 2:
-#         optim_dict["C"].zero_grad()
-#         # When using cross-modal, do not request reconstruction output.
-#         ci_list = [model_dict[f"E{i+1}"](data_list[i], adj_list, return_reconstruction=False)[0] for i in range(num_view)]
-#         new_data = torch.cat(ci_list, dim=1)
-#         c = model_dict["C"](new_data)
-#         ce_loss = torch.mean(criterion(c, label) * sample_weight)
-#         loss = ce_loss
-#         loss.backward()
-#         optim_dict["C"].step()
-#         loss_dict["C"] = loss.detach().cpu().item()
-
-#     return loss_dict
-
 def train_epoch(num_cls, data_list, adj_list, label, one_hot_label, sample_weight, model_dict, optim_dict, A_pathway=None, lambda_pathway=0.1, train_MOSA=True):
     loss_dict = {}
     criterion = nn.CrossEntropyLoss(reduction='none')
