@@ -193,7 +193,7 @@ def test_epoch(num_cls, data_list, adj_list, idx, model_dict, return_logits=Fals
 #     adj_test_list  = generate_G_from_H(H_test, variable_weight=False)
 #     return adj_train_list, adj_test_list
 
-def gen_trte_adj_mat(data_tr_list, data_te_list, trte_idx, k_neigs, pathway_dict=None, feature_names=None):
+def gen_trte_adj_mat(data_tr_list, data_te_list, trte_idx, k_neigs, pathway_dict=None, feature_names=None, valid_indices=None):
     H_tr = []
     H_te = []
     for i in range(len(data_tr_list)):
@@ -202,16 +202,20 @@ def gen_trte_adj_mat(data_tr_list, data_te_list, trte_idx, k_neigs, pathway_dict
         # Special handling for first view (typically mRNA)
         if pathway_dict and i == 0 and feature_names:
             # Use pathway-based construction for mRNA
+            data_tr_list[i] = data_tr_list[i][:, valid_indices]
+            data_te_list[i] = data_te_list[i][:, valid_indices]
+            logger.info(f"View {i+1} data shape after subsetting: {data_tr_list[i].shape} (train), {data_te_list[i].shape} (test)")
+            
             H_1 = construct_H_with_pathways(
                 data_tr_list[i], 
                 pathway_dict, 
-                feature_names[0],  # Feature names for this view
+                feature_names,  
                 k_neigs
             )
             H_2 = construct_H_with_pathways(
                 data_te_list[i], 
                 pathway_dict, 
-                feature_names[0], 
+                feature_names, 
                 k_neigs
             )
         else:
@@ -267,7 +271,7 @@ def train_test(data_folder, view_list, num_class, lr_e_pretrain, lr_e, lr_c, num
     print(f"Average genes per pathway: {avg_genes_per_pathway:.2f}")
     print(f"Smallest pathway: {min(pathway_sizes)} genes")
     print(f"Largest pathway: {max(pathway_sizes)} genes")
-    
+
     # Load data
     data_tr_list, data_te_list, trte_idx, labels_trte = prepare_trte_data(data_folder, view_list)
     labels_tr_tensor = torch.LongTensor(labels_trte[trte_idx["tr"]]).to(device)
@@ -278,7 +282,23 @@ def train_test(data_folder, view_list, num_class, lr_e_pretrain, lr_e, lr_c, num
     feature_file = f'./{data_folder}/1_featname.csv'
     feature_df = pd.read_csv(feature_file, header=None)
     features = feature_df[0].tolist()
-    adj_tr_list, adj_te_list = gen_trte_adj_mat(data_tr_list, data_te_list, trte_idx, k_neigs, pathway_dict, features)
+    if features and '|' in features[0]:
+        gene_symbols = [name.split('|')[0] for name in features]
+        
+        from pathway_utils import convert_gene_symbols_to_ensembl
+        filtered_symbol_to_ensembl = convert_gene_symbols_to_ensembl(gene_symbols)
+        gene_ids = list(filtered_symbol_to_ensembl.values())
+
+        valid_indices = []
+        for i, symbol in enumerate(gene_symbols):
+            if symbol in filtered_symbol_to_ensembl.keys():
+                valid_indices.append(i)
+
+        logger.info(f"Subsetting data to include only {len(valid_indices)} genes with valid ENSEMBL mappings")
+    else:
+        gene_ids = [eid.split('.')[0] for eid in features]
+
+    adj_tr_list, adj_te_list = gen_trte_adj_mat(data_tr_list, data_te_list, trte_idx, k_neigs, pathway_dict, gene_ids, valid_indices)
     dim_list = [x.shape[1] for x in data_tr_list]
     input_data_dim = [args.dim_he_list[-1]] * num_view  # using command-line provided hidden dims for transformer
     

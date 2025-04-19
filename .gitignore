@@ -1,0 +1,5 @@
+./MORE/src/*.sqlite
+./MORE/src/*.txt
+./MORE/reactome_pathways.json
+*.out
+*.pth

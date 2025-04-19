@@ -237,56 +237,132 @@ def prepare_pathway_dict(data_folder, file='./src/reactome_pathways.json'):
         logger.info(f"Error processing feature file: {e}")
         return pathway_dict
 
-def construct_H_with_pathways(X, pathway_dict, feature_names, k_neigs=5):
+# def construct_H_with_pathways(X, pathway_dict, feature_names, k_neigs, alpha=1, beta=1):
+#     """
+#     Construct a hypergraph using both KNN and pathway information.
+    
+#     Args:
+#         X: Data matrix (n_samples x n_features)
+#         pathway_dict: Dictionary mapping pathway names to gene lists
+#         feature_names: List of feature names (gene identifiers)
+#         k_neigs: Number of neighbors for KNN
+#         alpha: Weight for pathway-based connections
+#         beta: Weight for KNN-based connections
+        
+#     Returns:
+#         Combined hypergraph incidence matrix
+#     """
+#     n_obj = X.shape[0]
+#     dis_mat = Eu_dis(X)  # This creates a distance matrix of samples (n_obj x n_obj)
+    
+#     # Create KNN-based hypergraph
+#     H_knn = construct_H_with_KNN(X, k_neigs, is_probH=True)
+    
+#     # Initialize pathway-based hypergraph
+#     H_pathway = np.zeros((n_obj, n_obj))
+    
+#     # Process feature names to get gene IDs
+#     if feature_names and '|' in feature_names[0]:
+#         gene_symbols = [name.split('|')[0] for name in feature_names]
+        
+#         from pathway_utils import convert_gene_symbols_to_ensembl
+#         symbols_to_ensembl, filtered_symbol_to_ensembl = convert_gene_symbols_to_ensembl(gene_symbols)
+#         gene_ids = list(filtered_symbol_to_ensembl.values())
+#     else:
+#         gene_ids = [eid.split('.')[0] for eid in feature_names]
+    
+#     pathway_gene_to_feature_idx = {gene_id: idx for idx, gene_id in enumerate(gene_ids) if gene_id in [g for genes in pathway_dict.values() for g in genes]}
+    
+#     for i in range(n_obj):
+#         for j in range(i+1, n_obj):
+#             pathway_similarity = 0
+            
+#             for path_name, path_genes in pathway_dict.items():
+#                 path_indices = [ for gene, idx in pathway_gene_to_feature_idx.items() if gene in path_genes]
+                
+#                 if len(path_indices) > 1:
+#                     if len(path_indices) > 0:
+#                         x_i_path = X[i, path_indices]
+#                         x_j_path = X[j, path_indices]
+#                         if np.std(x_i_path) > 0 and np.std(x_j_path) > 0:
+#                             corr = np.corrcoef(x_i_path, x_j_path)[0, 1]
+#                             pathway_similarity += np.abs(corr)
+            
+#             if pathway_similarity > 0:
+#                 H_pathway[i, j] = pathway_similarity
+#                 H_pathway[j, i] = pathway_similarity
+    
+#     # Normalization: Scale each hypergraph to [0, 1]
+#     H_knn_normalized = H_knn / (np.max(H_knn) + 1e-8)
+#     H_pathway_normalized = H_pathway / (np.max(H_pathway) + 1e-8)
+    
+#     # Weighted combination with adaptive weights
+#     H_combined = (beta * H_knn_normalized + alpha * H_pathway_normalized)
+    
+#     return H_combined
+
+def construct_H_with_pathways(X, pathway_dict, gene_ids, k_neigs, alpha=0.6, beta=0.4):
     """
-    Construct hypergraph incidence matrix using both pathway information and k-nearest neighbors
+    Construct a hypergraph using both KNN and pathway information.
     
     Args:
-    - X: Input feature tensor
-    - pathway_dict: Dictionary of pathways with gene ENSEMBL IDs
-    - feature_names: List of feature names corresponding to the input tensor
-    - k_neigs: Number of neighbors to connect in traditional k-NN approach
-    
+        X: Data matrix (n_samples x n_features)
+        pathway_dict: Dictionary mapping pathway names to gene lists
+        feature_names: List of feature names (ensembl id)
+        k_neigs: Number of neighbors for KNN
+        alpha: Weight for pathway-based connections
+        beta: Weight for pathway-based connections
+        
     Returns:
-    - Hypergraph incidence matrix
+        Combined hypergraph incidence matrix
     """
     n_obj = X.shape[0]
-    dis_mat = Eu_dis(X)
+    n_features = X.shape[1]
     
-    # Create a traditional k-NN hypergraph
-    H_knn = construct_H_with_KNN(X, k_neigs, is_probH=True)
+    H_knn = construct_H_with_KNN(X, k_neigs, is_probH=True)    
     
-    # Initialize pathway-based hypergraph
-    H_pathway = np.zeros((n_obj, n_obj))
+    gene_to_idx = {gene_id: idx for idx, gene_id in enumerate(gene_ids)}
     
-    # Preprocess feature names to extract gene identifiers
-    if feature_names and '|' in feature_names[0]:
-        # BRCA-like dataset with "GeneSymbol|GeneID" format
-        gene_symbols = [name.split('|')[0] for name in feature_names]
-        
-        # Convert gene symbols to ENSEMBL IDs
-        from pathway_utils import convert_gene_symbols_to_ensembl
-        symbols_to_ensembl = convert_gene_symbols_to_ensembl(gene_symbols)
-        gene_ids = list(symbols_to_ensembl.values())
+    H_pathway = np.zeros((n_obj, 0))
+    
+    usable_pathways = 0
+    
+    is_torch_tensor = False
+    if isinstance(X, torch.Tensor):
+        is_torch_tensor = True
+        X_np = X.cpu().numpy()
     else:
-        # Other datasets with direct ENSEMBL IDs
-        gene_ids = [eid.split('.')[0] for eid in feature_names]
+        X_np = X
     
-    # Create pathway-based connections
-    for pathway, pathway_genes in pathway_dict.items():
-        # Find indices of genes in the current feature set
-        gene_indices = [i for i, gene_id in enumerate(gene_ids) if gene_id in pathway_genes]
+    for pathway_name, pathway_genes in pathway_dict.items():
+        pathway_indices = [gene_to_idx.get(gene, -1) for gene in pathway_genes]
+        pathway_indices = [idx for idx in pathway_indices if idx >= 0]
         
-        # If multiple genes from the same pathway are present
-        if len(gene_indices) > 1:
-            for i in range(len(gene_indices)):
-                for j in range(i+1, len(gene_indices)):
-                    idx1, idx2 = gene_indices[i], gene_indices[j]
-                    # Use inverse distance as connection weight
-                    dist = dis_mat[idx1, idx2]
-                    H_pathway[idx1, idx2] = np.exp(-dist)
-                    H_pathway[idx2, idx1] = np.exp(-dist)
+        if len(pathway_indices) >= 3:  
+            usable_pathways += 1
+            # print(f"{usable_pathways}: {pathway_indices}")
+            
+            pathway_expr = X_np[:, pathway_indices]
+            
+            sample_variances = np.var(pathway_expr, axis=1)
+            
+            membership = sample_variances / np.max(sample_variances) if np.max(sample_variances) > 0 else np.zeros_like(sample_variances)
+            
+            membership[membership < 0.1] = 0  
+            
+            H_pathway = np.column_stack((H_pathway, membership))
     
-    # Combine k-NN and pathway hypergraphs
-    H_combined = H_knn + H_pathway
+    logger.info(f"Found {usable_pathways} usable pathways with at least 3 genes")
+    
+    if H_pathway.shape[1] == 0:
+        logger.warning("No usable pathways found! Using only KNN-based hypergraph.")
+        return H_knn
+    
+    H_pathway_sum = np.sum(H_pathway, axis=0)
+    H_pathway_sum[H_pathway_sum == 0] = 1  
+    H_pathway = H_pathway / H_pathway_sum
+    
+    H_combined = np.column_stack((alpha * H_knn, beta * H_pathway))
+    # H_combined = H_pathway
+    
     return H_combined
