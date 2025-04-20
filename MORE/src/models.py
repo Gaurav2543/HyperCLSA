@@ -232,6 +232,7 @@ class HGNN(nn.Module):
 
         return x2, reconstruction, q
 
+
 # class HGNN(nn.Module):
 #     def __init__(self, in_ch, n_class, n_hid, dropout=0.5):
 #         super(HGNN, self).__init__()
@@ -247,12 +248,198 @@ class HGNN(nn.Module):
 #         x = F.leaky_relu(x, 0.25)
 #         return x
 
-def init_model_dict(input_data_dims, hyperpm, num_view, num_class, dim_list, dim_he_list, dim_hc,cross_modal=True):
+class PathwayGuidedAttention(nn.Module):
+    def __init__(self, input_dim, pathway_dim, n_head, dropout=0.1):
+        """
+        Pathway-guided attention mechanism for the first modality (gene features)
+        
+        Args:
+            input_dim: dimension of input features
+            pathway_dim: dimension for pathway representation
+            n_head: number of attention heads
+            dropout: dropout rate
+        """
+        super(PathwayGuidedAttention, self).__init__()
+        self.n_head = n_head
+        self.pathway_dim = pathway_dim
+        
+        # Pathway projection layers
+        self.pathway_proj = nn.Linear(input_dim, pathway_dim)
+        
+        # Multi-head attention for pathway guidance
+        self.q_linear = nn.Linear(pathway_dim, n_head * pathway_dim)
+        self.k_linear = nn.Linear(pathway_dim, n_head * pathway_dim)
+        self.v_linear = nn.Linear(input_dim, n_head * pathway_dim)
+        self.output_linear = nn.Linear(n_head * pathway_dim, input_dim)
+        
+        self.dropout = nn.Dropout(dropout)
+        self.layer_norm = nn.LayerNorm(input_dim)
+        
+    def forward(self, x, pathway_matrix=None):
+        """
+        Args:
+            x: input features [batch_size, feature_dim]
+            pathway_matrix: adjacency matrix representing pathway connections [feature_dim, feature_dim]
+        """
+        batch_size = x.size(0)
+        feature_dim = x.size(1)
+        # Project input through pathway lens
+        if pathway_matrix is not None:
+            # Ensure pathway_matrix is on the right device
+            pathway_matrix = pathway_matrix.to(x.device)
+            if pathway_matrix.shape[0] != feature_dim:
+                
+                # Option 1: Simple average pooling to reduce dimensions
+                reduced_size = feature_dim
+                
+                # Use adaptive average pooling to reduce the matrix dimensions
+                # First make it a 4D tensor for 2D pooling operations
+                temp_matrix = pathway_matrix.unsqueeze(0).unsqueeze(0)  # [1, 1, original_dim, original_dim]
+                resized_matrix = F.adaptive_avg_pool2d(temp_matrix, (reduced_size, reduced_size))
+                pathway_matrix = resized_matrix.squeeze(0).squeeze(0)  # [reduced_size, reduced_size]
+            # Use pathway information to guide attention
+            pathway_guided = torch.matmul(x,pathway_matrix)
+        else:
+            pathway_guided = x
+            
+        pathway_proj = self.pathway_proj(pathway_guided)
+        
+        # Multi-head attention
+        q = self.q_linear(pathway_proj).view(batch_size, self.n_head, -1)
+        k = self.k_linear(pathway_proj).view(batch_size, self.n_head, -1)
+        v = self.v_linear(x).view(batch_size, self.n_head, -1)
+        
+        # Scaled dot-product attention
+        scores = torch.bmm(q, k.transpose(1, 2)) / math.sqrt(self.pathway_dim)
+        attn = F.softmax(scores, dim=-1)
+        attn = self.dropout(attn)
+        
+        # Apply attention to values
+        context = torch.bmm(attn, v)
+        context = context.view(batch_size, -1)
+        
+        # Output projection
+        output = self.output_linear(context)
+        
+        # Residual connection and layer normalization
+        output = self.layer_norm(output + x)
+        
+        return output
+
+class MultiModalIntegration(nn.Module):
+    """
+    Integrates multiple modalities using pathway-guided attention for the first modality
+    and regular attention for others, then combines them using cross-modal attention.
+    """
+    def __init__(self, modal_dims, n_head, d_k, d_v, pathway_dim, num_class, dropout=0.1):
+        super(MultiModalIntegration, self).__init__()
+        self.modal_num = len(modal_dims)
+        self.n_head = n_head
+        self.d_k = d_k
+        self.d_v = d_v
+        self.hidden_dim = n_head * d_v
+        # Pathway-guided attention for the first modality
+        self.pathway_attention = PathwayGuidedAttention(modal_dims[0], pathway_dim, n_head, dropout)
+        self.pathway_proj = nn.Linear(modal_dims[0], self.hidden_dim)
+        # Regular attention for other modalities
+        self.modal_projections = nn.ModuleList()
+        for i in range(1, self.modal_num):
+            self.modal_projections.append(nn.Linear(modal_dims[i], n_head * d_v))
+        
+        # Cross-modal attention for integration
+        self.cross_attention = MultiHeadCrossModalAttention(
+            d_model=n_head * d_v, 
+            d_k=d_k, 
+            d_v=d_v, 
+            n_head=n_head, 
+            dropout=dropout
+        )
+        
+        # Hierarchical attention for modal fusion
+        self.hier_attention = HierarchicalAttention(self.modal_num, n_head * d_v)
+        
+        # Final classifier
+        self.classifier = nn.Linear(n_head * d_v, num_class)
+        
+    def forward(self, inputs, pathway_matrix=None):
+        """
+        Args:
+            inputs: list of input tensors for each modality
+            pathway_matrix: pathway adjacency matrix for the first modality
+        """
+        batch_size = inputs[0].size(0)
+        
+        # Apply pathway-guided attention to the first modality
+        pathway_output = self.pathway_attention(inputs[0], pathway_matrix)
+        
+        # Project to common dimension
+        modal_features = [self.pathway_proj(pathway_output)]
+        # Apply regular projections to other modalities
+        for i, projection in enumerate(self.modal_projections):
+            modal_features.append(projection(inputs[i+1]))
+        
+        # Stack modalities for cross-attention
+        stacked_features = torch.stack(modal_features, dim=1)  # [batch_size, modal_num, n_head * d_v]
+        
+        # Apply cross-modal attention
+        cross_output, _ = self.cross_attention(stacked_features, stacked_features, stacked_features)
+        
+        # Apply hierarchical attention to fuse modalities
+        fused_features, attn_weights = self.hier_attention(cross_output)
+        
+        # Classification
+        output = self.classifier(fused_features)
+        
+        return output, attn_weights
+
+class TransformerEncoderWithPathway(nn.Module):
+    """
+    Enhanced Transformer encoder that uses pathway-guided attention for integration
+    """
+    def __init__(self, input_data_dims, hyperpm, num_class, pathway_dim=64):
+        super(TransformerEncoderWithPathway, self).__init__()
+        self.input_data_dims = input_data_dims
+        self.d_k = hyperpm.n_hidden
+        self.d_v = hyperpm.n_hidden
+        self.n_head = hyperpm.n_head
+        self.dropout = hyperpm.dropout
+        self.modal_num = hyperpm.nmodal
+        
+        self.integration = MultiModalIntegration(
+            modal_dims=input_data_dims,
+            n_head=self.n_head,
+            d_k=self.d_k,
+            d_v=self.d_v,
+            pathway_dim=pathway_dim,
+            num_class=num_class,
+            dropout=self.dropout
+        )
+        
+    def forward(self, x, pathway_matrix=None):
+        # Split the input into different modalities
+        inputs = []
+        temp_dim = 0
+        for i in range(self.modal_num):
+            data = x[:, temp_dim: temp_dim + self.input_data_dims[i]]
+            temp_dim += self.input_data_dims[i]
+            inputs.append(data)
+        
+        # Apply integration with pathway guidance
+        output, _ = self.integration(inputs, pathway_matrix)
+        return output
+
+def init_model_dict(input_data_dims, hyperpm, num_view, num_class, dim_list, dim_he_list, dim_hc, cross_modal=True, use_pathway_attention=False):
     model_dict = {}
-    from models import HGNN, Classifier_1, TransformerEncoder  # local import to avoid circular dependency
+    from models import HGNN, Classifier_1, TransformerEncoder, TransformerEncoderWithPathway  # local import to avoid circular dependency
+    
     for i in range(num_view):
         model_dict[f"E{i+1}"] = HGNN(dim_list[i], num_class, dim_he_list, dropout=0.5)
         model_dict[f"C{i+1}"] = Classifier_1(dim_he_list[-1], num_class)
+    
     if num_view >= 2:
-        model_dict["C"] = TransformerEncoder(input_data_dims, hyperpm, num_class,cross_modal=cross_modal)
+        if use_pathway_attention:
+            model_dict["C"] = TransformerEncoderWithPathway(input_data_dims, hyperpm, num_class)
+        else:
+            model_dict["C"] = TransformerEncoder(input_data_dims, hyperpm, num_class, cross_modal=cross_modal)
+    
     return model_dict
