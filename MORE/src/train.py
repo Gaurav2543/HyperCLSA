@@ -11,7 +11,7 @@ from feature_selection import select_features, save_selected_features
 
 from utils import (logger, one_hot_tensor, cal_sample_weight, save_model_dict,
                    prepare_trte_data, construct_H_with_KNN, hyperedge_concat,
-                   generate_G_from_H, device, prepare_pathway_dict, construct_H_with_pathways)
+                   generate_G_from_H, device, prepare_pathway_dict, construct_H_with_pathways,convert_gene_symbols_to_ensembl)
 
 # Global variable to be set from main.py (to use command-line arguments inside train.py)
 args = None
@@ -33,7 +33,68 @@ def compute_pathway_loss(H, A, device):
     pathway_loss = torch.trace(torch.matmul(H.t(), torch.matmul(L, H)))
     return pathway_loss
 
-def train_epoch(num_cls, data_list, adj_list, label, one_hot_label, sample_weight, model_dict, optim_dict, A_pathway=None, lambda_pathway=0.1, train_MOSA=True):
+def construct_pathway_adjacency(pathway_dict, feature_names):
+    """
+    Construct an adjacency matrix based on pathway membership.
+    Genes that share pathways will have weighted connections.
+    
+    Args:
+        pathway_dict: Dictionary mapping pathway IDs to lists of gene names
+        feature_names: List of gene names (features) in the dataset
+        
+    Returns:
+        A torch tensor representing the pathway-based adjacency matrix
+    """
+    # Create a mapping from gene name to index in feature list
+    gene_symbols = [item.split('|')[0] for item in feature_names]
+    symbols_to_ensembl = convert_gene_symbols_to_ensembl(gene_symbols)
+    ensembl_ids = list(symbols_to_ensembl.values())
+    gene_to_idx = {gene: idx for idx, gene in enumerate(ensembl_ids)}
+    num_features = len(feature_names)
+    
+    # Initialize adjacency matrix with zeros
+    adj_matrix = torch.zeros((num_features, num_features), device=device)
+    
+    # Count genes from our feature list in the pathways
+    pathway_genes = set()
+    for pathway_id, genes in pathway_dict.items():
+        # print(f"Processing pathway {pathway_id} with {len(genes)} genes")
+        for gene in genes:
+            if gene in gene_to_idx:
+                pathway_genes.add(gene)
+    
+    logger.info(f"Found {len(pathway_genes)} genes from our feature list in the pathway database")
+    
+    # Construct the adjacency matrix
+    for pathway_id, genes in pathway_dict.items():
+        # Find genes in this pathway that are also in our feature list
+        pathway_genes = [gene for gene in genes if gene in gene_to_idx]
+        
+        # For each pair of genes in the pathway, increment their connection weight
+        for i in range(len(pathway_genes)):
+            idx_i = gene_to_idx[pathway_genes[i]]
+            for j in range(i+1, len(pathway_genes)):
+                idx_j = gene_to_idx[pathway_genes[j]]
+                # Add 1 to the connection weight for each shared pathway
+                adj_matrix[idx_i, idx_j] += 1
+                adj_matrix[idx_j, idx_i] += 1  # Symmetric matrix
+    
+    # Add self-loops (diagonal elements)
+    adj_matrix = adj_matrix + torch.eye(num_features, device=device)
+    
+    # Normalize the adjacency matrix (optional)
+    # Row normalization to make sure each row sums to 1
+    row_sum = adj_matrix.sum(dim=1, keepdim=True)
+    row_sum[row_sum == 0] = 1  # Avoid division by zero
+    adj_matrix = adj_matrix / row_sum
+    
+    # Check if adjacency matrix has meaningful connections
+    non_zero_connections = (adj_matrix > 0).sum().item() - num_features  # Subtract diagonal elements
+    logger.info(f"Created pathway adjacency matrix with {non_zero_connections//2} gene-gene connections")
+    
+    return adj_matrix
+
+def train_epoch(num_cls, data_list, adj_list, label, one_hot_label, sample_weight, model_dict, optim_dict, A_pathway=None, lambda_pathway=0.1, train_MOSA=True,pathway_matrix=None):
     loss_dict = {}
     criterion = nn.CrossEntropyLoss(reduction='none')
     recon_criterion = nn.MSELoss()
@@ -91,7 +152,10 @@ def train_epoch(num_cls, data_list, adj_list, label, one_hot_label, sample_weigh
         optim_dict["C"].zero_grad()
         ci_list = [model_dict[f"E{i+1}"](data_list[i], adj_list, return_reconstruction=False)[0] for i in range(num_view)]
         new_data = torch.cat(ci_list, dim=1)
-        c = model_dict["C"](new_data)
+        if "pathway_matrix" in locals():
+            c = model_dict["C"](new_data, pathway_matrix)
+        else:
+            c = model_dict["C"](new_data)
         ce_loss = torch.mean(criterion(c, label) * sample_weight)
         total_loss = ce_loss
         total_loss.backward()
@@ -100,7 +164,7 @@ def train_epoch(num_cls, data_list, adj_list, label, one_hot_label, sample_weigh
 
     return loss_dict
 
-def test_epoch(num_cls, data_list, adj_list, idx, model_dict, return_logits=False):
+def test_epoch(num_cls, data_list, adj_list, idx, model_dict, return_logits=False,pathway_matrix=None):
     for m in model_dict:
         model_dict[m].eval()
     num_view = len(data_list)
@@ -110,7 +174,11 @@ def test_epoch(num_cls, data_list, adj_list, idx, model_dict, return_logits=Fals
         ci_list.append(ci)
     if num_view >= 2:
         new_data = torch.cat(ci_list, dim=1)
-        c = model_dict["C"](new_data)
+        if "pathway_matrix" in locals():
+            print("HERE")
+            c = model_dict["C"](new_data, pathway_matrix)
+        else:
+            c = model_dict["C"](new_data)
     else:
         c = ci_list[0]
     if return_logits:
@@ -146,6 +214,8 @@ def gen_trte_adj_mat(data_tr_list, data_te_list, trte_idx, k_neigs, pathway_dict
         else:
             H_1 = construct_H_with_KNN(data_tr_list[i], k_neigs, is_probH=True, m_prob=1)
             H_2 = construct_H_with_KNN(data_te_list[i], k_neigs, is_probH=True, m_prob=1)
+            H_1 = construct_H_with_KNN(data_tr_list[i], k_neigs, is_probH=True, m_prob=1)
+            H_2 = construct_H_with_KNN(data_te_list[i], k_neigs, is_probH=True, m_prob=1)
         H_tr.append(H_1)
         H_te.append(H_2)
     H_train = hyperedge_concat(H_tr[0], H_tr[1], H_tr[2])
@@ -172,6 +242,8 @@ def train_test(data_folder, view_list, num_class, lr_e_pretrain, lr_e, lr_c, num
     hyperpm.n_head = 4
     hyperpm.nmodal = len(view_list)
     
+    # Prepare pathway database.
+    pathway_dict = prepare_pathway_dict(data_folder, file='reactome_pathways.json')
     # Prepare pathway database.
     pathway_dict = prepare_pathway_dict(data_folder, file='reactome_pathways.json')
     pathway_sizes = [len(genes) for genes in pathway_dict.values()]
@@ -242,12 +314,15 @@ def train_test(data_folder, view_list, num_class, lr_e_pretrain, lr_e, lr_c, num
     adj_tr_list, adj_te_list = gen_trte_adj_mat(data_tr_list, data_te_list, trte_idx, k_neigs, pathway_dict, gene_ids, valid_indices)
     dim_list = [x.shape[1] for x in data_tr_list]
     input_data_dim = [args.dim_he_list[-1]] * num_view   # use provided hidden dims for Transformer
+    input_data_dim = [args.dim_he_list[-1]] * num_view   # use provided hidden dims for Transformer
     
     from models import init_model_dict
-    model_dict = init_model_dict(input_data_dim, hyperpm, num_view, num_class, dim_list, args.dim_he_list, dim_hvcdn, cross_modal=cross_m)
+    model_dict = init_model_dict(input_data_dim, hyperpm, num_view, num_class, dim_list, args.dim_he_list, 
+                             dim_hvcdn, cross_modal=cross_m, use_pathway_attention=True)
     for m in model_dict:
         model_dict[m].to(device)
-    
+    pathway_matrix = construct_pathway_adjacency(pathway_dict, features)
+
     # Pretraining phase.
     logger.info("Starting pretraining ...")
     optim_dict = {}
@@ -288,7 +363,7 @@ def train_test(data_folder, view_list, num_class, lr_e_pretrain, lr_e, lr_c, num
     for epoch in range(num_epoch + 1):
         loss_dict = train_epoch(num_class, data_tr_list, adj_tr_list, labels_tr_tensor,
                                 one_hot_tensor(labels_tr_tensor, num_class), sample_weight_tr,
-                                model_dict, optim_dict, train_MOSA=True)
+                                model_dict, optim_dict, train_MOSA=True,pathway_matrix=pathway_matrix)
         avg_train_loss = np.mean(list(loss_dict.values()))
         if epoch % test_interval == 0:
             # Compute training metrics.
