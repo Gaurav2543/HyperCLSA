@@ -32,6 +32,14 @@ if __name__ == "__main__":
                         help='Number of pretrain epochs, default: 500.')
     parser.add_argument('--cross_m', '-cm', type=bool, default=True,
                         help='Enable cross-modal attention, default: True.')
+    parser.add_argument('--feature_selection_method', type=str, default='variance',
+                        help="Feature selection method: 'variance', 'mutual_info', 'pathway', 'combined', or 'pca'")
+    parser.add_argument('--variance_threshold', type=float, default=0.001,
+                        help="Threshold for variance filtering.")
+    parser.add_argument('--mi_k', type=int, default=1000,
+                        help="Number of features to select using mutual information.")
+    parser.add_argument('--min_pathway_features', type=int, default=1000,
+                        help="Minimum number of pathway features to keep.")
     args = parser.parse_args()
 
     # Set seed
