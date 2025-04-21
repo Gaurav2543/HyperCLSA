@@ -1,6 +1,7 @@
 import os
 import copy
 import torch
+import numpy as np
 import pandas as pd
 import torch.nn.functional as F
 from sklearn.metrics import f1_score, classification_report
@@ -10,14 +11,11 @@ from utils import (
 )
 from models_clclsa import HypergraphCLCLSA
 from losses import contrastive_loss
-from feature_selection import select_features
-
-args = None  # Placeholder for argument parsing
 
 def train_test_CLCLSA(
     data_folder, view_list, num_class,
     lr=1e-3, epochs=200, hidden_dims=[400,200],
-    latent_dim=128, attn_heads=4, lambda_contrast=0.5,
+    latent_dim=128, attn_heads=4, lambda_contrast=0.25,
     test_interval=10, seed=42, fs_method=None,
 ):
     set_seed(seed)
@@ -28,69 +26,73 @@ def train_test_CLCLSA(
     
     feature_files = [os.path.join(data_folder, f"{v}_featname.csv") for v in view_list]
     
-    import glob
+    if fs_method:
+        from feature_selection import select_features, save_selected_features
 
-    sel_dir = os.path.join(data_folder, "selected_features")
-    os.makedirs(sel_dir, exist_ok=True)
+        sel_dir = os.path.join(data_folder, "selected_features")
+        os.makedirs(sel_dir, exist_ok=True)
 
-    if hasattr(args, 'feature_selection_method') and args.feature_selection_method:
-        method = args.feature_selection_method.lower()
+        new_tr, new_te, new_names = [], [], []
 
-        for i, view in enumerate(view_list):
-            view_num = i + 1
+        # loop per view
+        for i, (Xtr, Xte, feat_file) in enumerate(zip(data_tr_list, data_te_list, feature_files)):
+            view = view_list[i]
+            idx_csv = os.path.join(sel_dir, f"{view}_fs_{fs_method}.csv")
 
-            # 1) look for any CSV matching the naming pattern
-            pattern = os.path.join(sel_dir, f"view_{view_num}_*{method}*.csv")
-            candidates = glob.glob(pattern)
+            # load original feature names
+            orig_names = pd.read_csv(feat_file, header=None).iloc[:,0].tolist()
 
-            if candidates:
-                # load indices from the first match
-                file_to_load = candidates[0]
-                df = pd.read_csv(file_to_load, header=0)
+            if os.path.exists(idx_csv):
+                # ---- load precomputed indices ----
+                df_idx = pd.read_csv(idx_csv, header=0)
+                # pick 'original_index' or fallback to 2nd column
+                ser = df_idx.get("original_index", df_idx.iloc[:,1])
+                nums = pd.to_numeric(ser, errors="coerce").dropna().astype(int).tolist()
 
-                # pick the "original_index" column if present, else the 2nd column
-                if 'original_index' in df.columns:
-                    idx_ser = df['original_index']
-                else:
-                    idx_ser = df.iloc[:,1]
-
-                # coerce & drop any stray non‑integers
-                nums = pd.to_numeric(idx_ser, errors='coerce')
-                if nums.isna().any():
-                    logger.warning(f"[view {view_num}] dropped {nums.isna().sum()} bad rows from {os.path.basename(file_to_load)}")
-                selected_indices = nums.dropna().astype(int).tolist()
-
-                logger.info(f"[view {view_num}] loaded {len(selected_indices)} pre‑computed indices from {os.path.basename(file_to_load)}")
-
-                # slice your arrays
-                data_tr_list[i] = data_tr_list[i][:, selected_indices]
-                data_te_list[i] = data_te_list[i][:, selected_indices]
+                logger.info(f"[{view}] loading {len(nums)} pre‑selected features from {idx_csv}")
+                sel_names = [orig_names[j] for j in nums]
+                Xtr_sel = Xtr[:, nums]
+                Xte_sel = Xte[:, nums]
 
             else:
-                # no saved CSV found: compute & then save indices for next time
-                feat_file = os.path.join(data_folder, f"{view}_featname.csv")
-                feature_names = pd.read_csv(feat_file, header=None).iloc[:,0].tolist()
+                # ---- compute & save ----
+                y = labels_all[trte_idx["tr"]]
+                Xtr_np, Xte_np = Xtr.cpu().numpy(), Xte.cpu().numpy()
 
-                filtered_tr, filtered_te, selected_indices, selected_names = select_features(
-                    data_tr_list[i],
-                    data_te_list[i],
-                    labels_all[trte_idx["tr"]],
-                    feature_names,
-                    method=method,
+                Xtr_sel_np, Xte_sel_np, nums, sel_names = select_features(
+                    Xtr_np, Xte_np, y, orig_names, method=fs_method
                 )
+                logger.info(f"[{view}] computed {len(nums)} features via {fs_method}")
 
-                # overwrite with filtered data
-                data_tr_list[i] = filtered_tr
-                data_te_list[i] = filtered_te
+                # save indices + names under selected_features/
+                save_selected_features(orig_names, nums, data_folder, view, fs_method)
+                # overwrite the featname CSV so downstream code sees only sel_names
+                pd.DataFrame(sel_names).to_csv(feat_file, index=False, header=False)
 
-                # save only the indices
-                out_idx = os.path.join(sel_dir, f"view_{view_num}_fs_{method}.csv")
-                pd.DataFrame(selected_indices).to_csv(out_idx, index=False, header=False)
-                logger.info(f"[view {view_num}] computed & saved {len(selected_indices)} indices → {os.path.basename(out_idx)}")
+                # back to torch
+                Xtr_sel = torch.FloatTensor(Xtr_sel_np).to(device)
+                Xte_sel = torch.FloatTensor(Xte_sel_np).to(device)
+
+            # append into new lists (if we loaded, still convert to torch here)
+            if isinstance(Xtr_sel, np.ndarray):
+                Xtr_sel = torch.FloatTensor(Xtr_sel).to(device)
+                Xte_sel = torch.FloatTensor(Xte_sel).to(device)
+
+            new_tr.append(Xtr_sel)
+            new_te.append(Xte_sel)
+            new_names.append(sel_names)
+
+        # finally swap in your filtered data
+        data_tr_list = new_tr
+        data_te_list = new_te
+        feature_names_list = new_names
+
+    else:
+        feature_names_list = feature_files
 
     # # if user asked for FS, apply it per view
     # if fs_method:
-    #     from feature_selection import select_features
+    #     from feature_selection import select_features, save_selected_features
     #     new_tr, new_te = [], []
     #     new_names = []
     #     for Xtr, Xte, feat_file in zip(data_tr_list, data_te_list, feature_files):
@@ -108,9 +110,21 @@ def train_test_CLCLSA(
     #         new_te.append(torch.FloatTensor(Xte_sel).to(device))
     #         new_names.append(sel_names)
             
-    #         # overwrite only if we actually performed FS
-    #         data_tr_list, data_te_list = new_tr, new_te
-    #         feature_names_list = new_names
+    #         save_selected_features(
+    #             feature_names=names,
+    #             selected_indices=idx_sel,
+    #             output_dir=data_folder,
+    #             view_name=view_list[0],
+    #             method=fs_method
+    #         )
+            
+    #         # save the selected features
+    #         pd.DataFrame(sel_names).to_csv(feat_file, "selected_features", index=False, header=False)
+    #         logger.info(f"Saved selected features to {feat_file}")
+            
+    #     # overwrite only if we actually performed FS
+    #     data_tr_list, data_te_list = new_tr, new_te
+    #     feature_names_list = new_names
     # else:
     #     feature_names_list = feature_files
 
