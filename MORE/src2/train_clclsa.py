@@ -66,8 +66,13 @@ def train_test_CLCLSA(
 
                 # save indices + names under selected_features/
                 save_selected_features(orig_names, nums, data_folder, view, fs_method)
-                # overwrite the featname CSV so downstream code sees only sel_names
-                pd.DataFrame(sel_names).to_csv(feat_file, index=False, header=False)
+                pd.DataFrame(sel_names).to_csv(
+                    feat_file,
+                    index=False,
+                    header=False,
+                    sep=","              # or just leave this out; the default is ','
+                )
+                logger.info(f"Overwrote {feat_file} with {len(sel_names)} selected names")
 
                 # back to torch
                 Xtr_sel = torch.FloatTensor(Xtr_sel_np).to(device)
@@ -89,44 +94,6 @@ def train_test_CLCLSA(
 
     else:
         feature_names_list = feature_files
-
-    # # if user asked for FS, apply it per view
-    # if fs_method:
-    #     from feature_selection import select_features, save_selected_features
-    #     new_tr, new_te = [], []
-    #     new_names = []
-    #     for Xtr, Xte, feat_file in zip(data_tr_list, data_te_list, feature_files):
-    #         names = pd.read_csv(feat_file, header=None).iloc[:,0].tolist()
-    #         Xtr = Xtr.cpu().numpy()
-    #         Xte = Xte.cpu().numpy()
-    #         y   = labels_all[trte_idx["tr"]]
-
-    #         Xtr_sel, Xte_sel, idx_sel, sel_names = select_features(
-    #             Xtr, Xte, y, names, method=fs_method
-    #         )
-
-    #         # convert back to torch tensors and store
-    #         new_tr.append(torch.FloatTensor(Xtr_sel).to(device))
-    #         new_te.append(torch.FloatTensor(Xte_sel).to(device))
-    #         new_names.append(sel_names)
-            
-    #         save_selected_features(
-    #             feature_names=names,
-    #             selected_indices=idx_sel,
-    #             output_dir=data_folder,
-    #             view_name=view_list[0],
-    #             method=fs_method
-    #         )
-            
-    #         # save the selected features
-    #         pd.DataFrame(sel_names).to_csv(feat_file, "selected_features", index=False, header=False)
-    #         logger.info(f"Saved selected features to {feat_file}")
-            
-    #     # overwrite only if we actually performed FS
-    #     data_tr_list, data_te_list = new_tr, new_te
-    #     feature_names_list = new_names
-    # else:
-    #     feature_names_list = feature_files
 
     # Build per-view adjacency lists
     from utils import construct_H_with_KNN, generate_G_from_H
