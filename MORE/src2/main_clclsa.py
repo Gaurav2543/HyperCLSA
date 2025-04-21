@@ -6,12 +6,12 @@ if __name__ == '__main__':
     parser.add_argument('--file_dir',    type=str, default='BRCA')
     parser.add_argument('--view_list',   nargs='+', type=int, default=[1,2,3])
     parser.add_argument('--num_class',   type=int, default=5)
-    parser.add_argument('--lr',          type=float, default=5e-4)
-    parser.add_argument('--epochs',      type=int,   default=5000)
+    parser.add_argument('--lr',          type=float, default=1e-3)
+    parser.add_argument('--epochs',      type=int,   default=7500)
     parser.add_argument('--hidden_dims', nargs=2,    type=int, default=[400,200])
     parser.add_argument('--latent_dim',  type=int,   default=128)
     parser.add_argument('--attn_heads',  type=int,   default=4)
-    parser.add_argument('--feature_selection_method', '-fsm', type=str, default='rfe',
+    parser.add_argument('--feature_selection_method', '-fsm', type=str, default='boruta',
                     help='one of [rfecv, boruta, lasso, stability, rfe, mrmr, ga]')
     parser.add_argument('--lambda_contrast', type=float, default=0.5)
     parser.add_argument('--seed',        type=int,   default=42)
