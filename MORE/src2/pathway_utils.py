@@ -4,6 +4,7 @@ import os
 import time
 from pybiomart import Server
 import logging
+import shutil
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -27,10 +28,16 @@ def download_ensembl_to_reactome():
         # with open("Ensembl2Reactome.txt", "wb") as f:
         #     f.write(response.content)
         
-        print("Download complete. Processing file...")
+        # print("Download complete. Processing file...")
+
+        # source = './Ensembl2Reactome.txt'
+        # destination = './data/Ensembl2Reactome.txt'
+        # dest = shutil.move(source, destination)
+
+        # print("Destination path:", dest) 
         
         # Read the file into a pandas DataFrame - adjust columns based on your sample
-        df = pd.read_csv("Ensembl2Reactome.txt", sep="\t", header=None)
+        df = pd.read_csv("./data/Ensembl2Reactome.txt", sep="\t", header=None)
         
         # Based on your sample, set column names appropriately
         # The exact column names may need adjustment based on the actual data
@@ -158,14 +165,16 @@ def convert_gene_symbols_to_ensembl(gene_symbols):
 
 # Example usage
 if __name__ == "__main__":
+    os.makedirs("data", exist_ok=True)
+    
     # Download and process the full Ensembl2Reactome file
     pathway_dict = download_ensembl_to_reactome()
     
     # If successful, save the pathway dictionary
     if pathway_dict:
         import json
-        with open("reactome_pathways.json", "w") as f:
+        with open("./data/reactome_pathways.json", "w") as f:
             json.dump(pathway_dict, f)
         
-        print("Pathway dictionary saved to reactome_pathways.json")
+        print("Pathway dictionary saved to ./data/reactome_pathways.json")
     

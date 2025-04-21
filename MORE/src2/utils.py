@@ -222,7 +222,7 @@ def gen_trte_adj_mat(data_tr_list, data_te_list, trte_idx, k_neigs, pathway_dict
 
 
 # prepare Pathway Functions
-def prepare_pathway_dict(data_folder, file='./src/reactome_pathways.json'):
+def prepare_pathway_dict(data_folder, file='./data/reactome_pathways.json'):
     """
     Prepares the pathway dictionary by loading from a JSON file and filtering based on gene list.
     """

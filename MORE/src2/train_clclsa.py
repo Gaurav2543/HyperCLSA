@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from sklearn.metrics import f1_score, classification_report
 from utils import (
     logger, set_seed, prepare_trte_data, gen_trte_adj_mat,
-    cal_sample_weight, one_hot_tensor, save_model_dict, device
+    cal_sample_weight, one_hot_tensor, save_model_dict, device, prepare_pathway_dict
 )
 from models_clclsa import HypergraphCLCLSA
 from losses import contrastive_loss
@@ -21,6 +21,16 @@ def train_test_CLCLSA(
     test_interval=10, seed=42, fs_method=None,
 ):
     set_seed(seed)
+
+    # prepare pathway database
+    pathway_dict = prepare_pathway_dict(data_folder, file='./data/reactome_pathways.json')
+    pathway_sizes = [len(genes) for genes in pathway_dict.values()]
+    avg_genes_per_pathway = sum(pathway_sizes) / len(pathway_sizes)
+    print(f"No. of pathways: {len(pathway_dict.keys())}")
+    print(f"Average genes per pathway: {avg_genes_per_pathway:.2f}")
+    print(f"Smallest pathway: {min(pathway_sizes)} genes")
+    print(f"Largest pathway: {max(pathway_sizes)} genes")
+
     # Load data
     data_tr_list, data_te_list, trte_idx, labels_all = prepare_trte_data(data_folder, view_list)
     labels_tr = torch.LongTensor(labels_all[trte_idx['tr']]).to(device)
@@ -32,7 +42,7 @@ def train_test_CLCLSA(
 
     sel_dir = os.path.join(data_folder, "selected_features")
     os.makedirs(sel_dir, exist_ok=True)
-
+    
     if hasattr(args, 'feature_selection_method') and args.feature_selection_method:
         method = args.feature_selection_method.lower()
 
@@ -114,54 +124,58 @@ def train_test_CLCLSA(
     # else:
     #     feature_names_list = feature_files
 
-    # Build per-view adjacency lists
-    from utils import construct_H_with_KNN, generate_G_from_H
-    adj_tr_list = []
-    adj_te_list = []
-    # construct separate hypergraph and adjacency for each omics view
-    for x_tr, x_te in zip(data_tr_list, data_te_list):
-        H_tr = construct_H_with_KNN(x_tr, k_neigs=4, is_probH=True)
-        H_te = construct_H_with_KNN(x_te, k_neigs=4, is_probH=True)
-        G_tr = generate_G_from_H(H_tr, variable_weight=False)
-        G_te = generate_G_from_H(H_te, variable_weight=False)
-        adj_tr_list.append(G_tr)
-        adj_te_list.append(G_te)
+    if hasattr(args, 'feature_selection_method') and args.feature_selection_method:
+        method = args.feature_selection_method.lower()
+        print(method)
 
-    # Model + optimizer
-    input_dims = [x.shape[1] for x in data_tr_list]
-    num_views  = len(view_list)
-    model      = HypergraphCLCLSA(
-        input_dims, hidden_dims, latent_dim,
-        num_views, num_class, attn_heads
-    ).to(device)
-    optimizer  = torch.optim.Adam(model.parameters(), lr=lr)
-    criterion  = torch.nn.CrossEntropyLoss()
-    best_f1, best_state = 0.0, None
+    # # Build per-view adjacency lists
+    # from utils import construct_H_with_KNN, generate_G_from_H
+    # adj_tr_list = []
+    # adj_te_list = []
+    # # construct separate hypergraph and adjacency for each omics view
+    # for x_tr, x_te in zip(data_tr_list, data_te_list):
+    #     H_tr = construct_H_with_KNN(x_tr, k_neigs=4, is_probH=True)
+    #     H_te = construct_H_with_KNN(x_te, k_neigs=4, is_probH=True)
+    #     G_tr = generate_G_from_H(H_tr, variable_weight=False)
+    #     G_te = generate_G_from_H(H_te, variable_weight=False)
+    #     adj_tr_list.append(G_tr)
+    #     adj_te_list.append(G_te)
 
-    for epoch in range(1, epochs+1):
-        model.train(); optimizer.zero_grad()
-        z_views, z_fused, logits = model(data_tr_list, adj_tr_list)
-        cls_loss  = criterion(logits, labels_tr)
-        cont_loss = contrastive_loss(z_views, labels_tr)
-        loss = cls_loss + lambda_contrast * cont_loss
-        loss.backward(); optimizer.step()
+    # # Model + optimizer
+    # input_dims = [x.shape[1] for x in data_tr_list]
+    # num_views  = len(view_list)
+    # model      = HypergraphCLCLSA(
+    #     input_dims, hidden_dims, latent_dim,
+    #     num_views, num_class, attn_heads
+    # ).to(device)
+    # optimizer  = torch.optim.Adam(model.parameters(), lr=lr)
+    # criterion  = torch.nn.CrossEntropyLoss()
+    # best_f1, best_state = 0.0, None
 
-        if epoch % test_interval == 0:
-            model.eval()
-            with torch.no_grad():
-                _, _, logits_val = model(data_te_list, adj_te_list)
-                preds = logits_val.argmax(dim=1)
-                f1 = f1_score(labels_te.cpu(), preds.cpu(), average='macro')
-                logger.info(f"Epoch {epoch}: Loss {loss:.4f}, Val F1 {f1:.4f}")
-                if f1 > best_f1:
-                    best_f1, best_state = f1, copy.deepcopy(model.state_dict())
+    # for epoch in range(1, epochs+1):
+    #     model.train(); optimizer.zero_grad()
+    #     z_views, z_fused, logits = model(data_tr_list, adj_tr_list)
+    #     cls_loss  = criterion(logits, labels_tr)
+    #     cont_loss = contrastive_loss(z_views, labels_tr)
+    #     loss = cls_loss + lambda_contrast * cont_loss
+    #     loss.backward(); optimizer.step()
 
-    # Save & report
-    model.load_state_dict(best_state)
-    save_model_dict(os.path.join(data_folder, 'models_clclsa'), {'model': model})
-    model.eval()
-    with torch.no_grad():
-        _, _, logits_f = model(data_te_list, adj_te_list)
-        report = classification_report(labels_te.cpu(), logits_f.argmax(1).cpu())
-        logger.info(f"Best Test F1: {best_f1:.4f}")
-        logger.info("Classification Report:\n" + report)
+    #     if epoch % test_interval == 0:
+    #         model.eval()
+    #         with torch.no_grad():
+    #             _, _, logits_val = model(data_te_list, adj_te_list)
+    #             preds = logits_val.argmax(dim=1)
+    #             f1 = f1_score(labels_te.cpu(), preds.cpu(), average='macro')
+    #             logger.info(f"Epoch {epoch}: Loss {loss:.4f}, Val F1 {f1:.4f}")
+    #             if f1 > best_f1:
+    #                 best_f1, best_state = f1, copy.deepcopy(model.state_dict())
+
+    # # Save & report
+    # model.load_state_dict(best_state)
+    # save_model_dict(os.path.join(data_folder, 'models_clclsa'), {'model': model})
+    # model.eval()
+    # with torch.no_grad():
+    #     _, _, logits_f = model(data_te_list, adj_te_list)
+    #     report = classification_report(labels_te.cpu(), logits_f.argmax(1).cpu())
+    #     logger.info(f"Best Test F1: {best_f1:.4f}")
+    #     logger.info("Classification Report:\n" + report)
