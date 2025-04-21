@@ -66,13 +66,6 @@ def train_test_CLCLSA(
 
                 # save indices + names under selected_features/
                 save_selected_features(orig_names, nums, data_folder, view, fs_method)
-                pd.DataFrame(sel_names).to_csv(
-                    feat_file,
-                    index=False,
-                    header=False,
-                    sep=","              # or just leave this out; the default is ','
-                )
-                logger.info(f"Overwrote {feat_file} with {len(sel_names)} selected names")
 
                 # back to torch
                 Xtr_sel = torch.FloatTensor(Xtr_sel_np).to(device)
