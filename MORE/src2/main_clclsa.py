@@ -11,7 +11,7 @@ if __name__ == '__main__':
     parser.add_argument('--hidden_dims', nargs=2,    type=int, default=[400,200])
     parser.add_argument('--latent_dim',  type=int,   default=128)
     parser.add_argument('--attn_heads',  type=int,   default=4)
-    parser.add_argument('--feature_selection_method', '-fsm', type=str, default='boruta',
+    parser.add_argument('--feature_selection_method', '-fsm', type=str, default='rfe',
                     help='one of [rfecv, boruta, lasso, stability, rfe, mrmr, ga]')
     parser.add_argument('--lambda_contrast', type=float, default=0.5)
     parser.add_argument('--seed',        type=int,   default=42)
