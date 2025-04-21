@@ -106,8 +106,6 @@ def filter_pathways_by_gene_list(pathway_dict, gene_list):
     Returns:
         Filtered pathway dictionary
     """
-    print("Gene list")
-    print(gene_list[1:10])
     gene_set = set(gene_list)
     filtered_dict = {}
     

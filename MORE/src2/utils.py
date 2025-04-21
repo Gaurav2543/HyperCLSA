@@ -276,68 +276,101 @@ def prepare_pathway_dict(data_folder, file='./data/reactome_pathways.json'):
         logger.info(f"Error processing feature file: {e}")
         return pathway_dict
 
-def construct_H_with_pathways(X, pathway_dict, gene_ids, k_neigs, alpha=0.6, beta=0.4):
+def construct_H_with_pathways(X_path, X, pathway_dict, gene_ids, k_neigs, 
+                               type='correlation', 
+                               correlation_threshold=0.7, 
+                               variance_threshold=0.1,
+                               alpha=1, beta=1):
     """
     Construct a hypergraph using both KNN and pathway information.
-    
-    Args:
-        X: Data matrix (n_samples x n_features)
-        pathway_dict: Dictionary mapping pathway names to gene lists
-        feature_names: List of feature names (ensembl id)
-        k_neigs: Number of neighbors for KNN
-        alpha: Weight for pathway-based connections
-        beta: Weight for pathway-based connections
-        
-    Returns:
-        Combined hypergraph incidence matrix
     """
-    n_obj = X.shape[0]
-    n_features = X.shape[1]
+    n_obj = X_path.shape[0]
+    n_features = X_path.shape[1]
     
+    # Construct KNN hypergraph
     H_knn = construct_H_with_KNN(X, k_neigs, is_probH=True)    
     
+    # Create gene to index mapping
     gene_to_idx = {gene_id: idx for idx, gene_id in enumerate(gene_ids)}
     
-    H_pathway = np.zeros((n_obj, 0))
-    
+    # Initialize pathway hypergraph
+    H_pathway = []
     usable_pathways = 0
     
+    # Handle tensor conversion
     is_torch_tensor = False
-    if isinstance(X, torch.Tensor):
+    if isinstance(X_path, torch.Tensor):
         is_torch_tensor = True
-        X_np = X.cpu().numpy()
+        X_np = X_path.cpu().numpy()
     else:
-        X_np = X
+        X_np = X_path
     
     for pathway_name, pathway_genes in pathway_dict.items():
+        # Get valid indices for pathway genes
         pathway_indices = [gene_to_idx.get(gene, -1) for gene in pathway_genes]
         pathway_indices = [idx for idx in pathway_indices if idx >= 0]
         
+        # Require at least 3 genes in the pathway
         if len(pathway_indices) >= 3:  
             usable_pathways += 1
-            # print(f"{usable_pathways}: {pathway_indices}")
-            
             pathway_expr = X_np[:, pathway_indices]
             
-            sample_variances = np.var(pathway_expr, axis=1)
+            # Different hypergraph construction methods
+            if type == 'correlation':
+                # Correlation-based pathway membership
+                gene_correlation = np.corrcoef(pathway_expr.T)
+                
+                # Check if any gene pairs have high correlation
+                high_corr_mask = np.any(gene_correlation > correlation_threshold, axis=1)
+                membership = high_corr_mask.astype(float)
             
-            membership = sample_variances / np.max(sample_variances) if np.max(sample_variances) > 0 else np.zeros_like(sample_variances)
+            elif type == 'variance':
+                # Variance-based pathway membership
+                sample_variances = np.var(pathway_expr, axis=1)
+                membership = sample_variances / np.max(sample_variances) if np.max(sample_variances) > 0 else np.zeros_like(sample_variances)
+                membership[membership < variance_threshold] = 0
             
-            membership[membership < 0.1] = 0  
+            elif type == 'entropy':
+                # Entropy-based pathway membership
+                from scipy.stats import entropy
+                sample_entropies = np.apply_along_axis(
+                    lambda x: entropy(np.abs(x) + 1e-10), 
+                    axis=1, 
+                    arr=pathway_expr
+                )
+                membership = sample_entropies / np.max(sample_entropies)
             
-            H_pathway = np.column_stack((H_pathway, membership))
+            else:
+                raise ValueError(f"Unknown pathway hypergraph type: {type}")
+            
+            # Ensure membership is a 1D array with the same length as n_obj
+            membership = membership.reshape(-1)
+            
+            # Pad or truncate to match n_obj
+            if len(membership) > n_obj:
+                membership = membership[:n_obj]
+            elif len(membership) < n_obj:
+                membership = np.pad(membership, (0, n_obj - len(membership)), mode='constant')
+            
+            H_pathway.append(membership)
     
+    # Logging
     logger.info(f"Found {usable_pathways} usable pathways with at least 3 genes")
     
-    if H_pathway.shape[1] == 0:
+    # Fallback to KNN if no pathway hypergraph
+    if len(H_pathway) == 0:
         logger.warning("No usable pathways found! Using only KNN-based hypergraph.")
         return H_knn
     
+    # Convert to numpy array and normalize
+    H_pathway = np.column_stack(H_pathway)
+    
+    # Normalize pathway hypergraph
     H_pathway_sum = np.sum(H_pathway, axis=0)
     H_pathway_sum[H_pathway_sum == 0] = 1  
     H_pathway = H_pathway / H_pathway_sum
     
+    # Combine KNN and pathway hypergraphs
     H_combined = np.column_stack((alpha * H_knn, beta * H_pathway))
-    # H_combined = H_pathway
     
     return H_combined
