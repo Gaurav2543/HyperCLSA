@@ -1,8 +1,9 @@
 import math
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from utils import device
+import torch.nn.functional as F
+from torch.nn.parameter import Parameter
 
 def xavier_init(m):
     if isinstance(m, nn.Linear):
@@ -427,6 +428,145 @@ class TransformerEncoderWithPathway(nn.Module):
         # Apply integration with pathway guidance
         output, _ = self.integration(inputs, pathway_matrix)
         return output
+    
+################################# GNN #####################################
+class GNN_Layer(nn.Module):
+    def __init__(self, in_features, out_features, bias=True):
+        super(GNN_Layer, self).__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = Parameter(torch.Tensor(in_features, out_features))
+        if bias:
+            self.bias = Parameter(torch.Tensor(out_features))
+        else:
+            self.register_parameter('bias', None)
+        self.reset_parameters()
+        
+    def reset_parameters(self):
+        stdv = 1. / math.sqrt(self.weight.size(1))
+        self.weight.data.uniform_(-stdv, stdv)
+        if self.bias is not None:
+            self.bias.data.uniform_(-stdv, stdv)
+    
+    def forward(self, x, adj):
+        adj = adj.to(device)
+        # Apply weight matrix to node features
+        support = torch.matmul(x, self.weight)
+        # Apply adjacency matrix for message passing
+        output = torch.matmul(adj, support)
+        if self.bias is not None:
+            output = output + self.bias
+        return output
+
+class GNN(nn.Module):
+    def __init__(self, in_ch, n_class, n_hid, dropout=0.5):
+        super(GNN, self).__init__()
+        self.dropout = dropout
+        
+        # GNN layers
+        self.gnn1 = GNN_Layer(in_ch, n_hid[0])
+        self.gnn2 = GNN_Layer(n_hid[0], n_hid[1])
+        
+        # Decoder for reconstruction
+        self.decoder = nn.Sequential(
+            nn.Linear(n_hid[1], in_ch)
+        )
+        
+    def forward(self, x, adj, return_reconstruction=False, return_cluster=False):
+        # First GNN layer
+        x1 = self.gnn1(x, adj)
+        x1 = F.relu(x1)
+        x1 = F.dropout(x1, self.dropout, training=self.training)
+        
+        # Second GNN layer
+        x2 = self.gnn2(x1, adj)
+        x2 = F.relu(x2)
+        
+        # Optional reconstruction
+        reconstruction = self.decoder(x2) if return_reconstruction else None
+        
+        # Optional clustering information
+        if return_cluster:
+            norm_x = x2 / (1e-8 + x2.norm(dim=1, keepdim=True))
+            q = 1.0 / (1.0 + torch.cdist(norm_x, norm_x).pow(2))
+            q = q / q.sum(dim=1, keepdim=True)
+        else:
+            q = None
+            
+        return x2, reconstruction, q
+################################# GNN #####################################
+    
+    
+################################# GCN #####################################
+class GCN_Layer(nn.Module):
+    def __init__(self, in_features, out_features, bias=True):
+        super(GCN_Layer, self).__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = Parameter(torch.Tensor(in_features, out_features))
+        if bias:
+            self.bias = Parameter(torch.Tensor(out_features))
+        else:
+            self.register_parameter('bias', None)
+        self.reset_parameters()
+        
+    def reset_parameters(self):
+        stdv = 1. / math.sqrt(self.weight.size(1))
+        self.weight.data.uniform_(-stdv, stdv)
+        if self.bias is not None:
+            self.bias.data.uniform_(-stdv, stdv)
+    
+    def forward(self, x, adj):
+        adj = adj.to(device)
+
+        # Apply feature transformation first
+        support = torch.matmul(x, self.weight)
+        
+        # Message passing with normalized adjacency
+        output = torch.matmul(adj, support)
+        
+        if self.bias is not None:
+            output = output + self.bias
+            
+        return output
+
+class GCN(nn.Module):
+    def __init__(self, in_ch, n_class, n_hid, dropout=0.5):
+        super(GCN, self).__init__()
+        self.dropout = dropout
+        
+        # GCN layers
+        self.gc1 = GCN_Layer(in_ch, n_hid[0])
+        self.gc2 = GCN_Layer(n_hid[0], n_hid[1])
+        
+        # Decoder for reconstruction
+        self.decoder = nn.Sequential(
+            nn.Linear(n_hid[1], in_ch)
+        )
+        
+    def forward(self, x, adj, return_reconstruction=False, return_cluster=False):
+        # First GCN layer
+        x1 = self.gc1(x, adj)
+        x1 = F.relu(x1)
+        x1 = F.dropout(x1, self.dropout, training=self.training)
+        
+        # Second GCN layer
+        x2 = self.gc2(x1, adj)
+        x2 = F.relu(x2)
+        
+        # Optional reconstruction
+        reconstruction = self.decoder(x2) if return_reconstruction else None
+        
+        # Optional clustering information
+        if return_cluster:
+            norm_x = x2 / (1e-8 + x2.norm(dim=1, keepdim=True))
+            q = 1.0 / (1.0 + torch.cdist(norm_x, norm_x).pow(2))
+            q = q / q.sum(dim=1, keepdim=True)
+        else:
+            q = None
+            
+        return x2, reconstruction, q
+################################# GCN #####################################    
 
 def init_model_dict(input_data_dims, hyperpm, num_view, num_class, dim_list, dim_he_list, dim_hc, cross_modal=True, use_pathway_attention=False):
     model_dict = {}
@@ -434,6 +574,8 @@ def init_model_dict(input_data_dims, hyperpm, num_view, num_class, dim_list, dim
     
     for i in range(num_view):
         model_dict[f"E{i+1}"] = HGNN(dim_list[i], num_class, dim_he_list, dropout=0.5)
+        # model_dict[f"E{i+1}"] = GCN(dim_list[i], num_class, dim_he_list, dropout=0.5)
+        # model_dict[f"E{i+1}"] = GNN(dim_list[i], num_class, dim_he_list, dropout=0.5)
         model_dict[f"C{i+1}"] = Classifier_1(dim_he_list[-1], num_class)
     
     if num_view >= 2:
