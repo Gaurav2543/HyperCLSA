@@ -15,7 +15,12 @@ if __name__ == '__main__':
                     help='one of [rfecv, boruta, lasso, stability, rfe, mrmr, ga]')
     parser.add_argument('--lambda_contrast', type=float, default=0.5)
     parser.add_argument('--seed',        type=int,   default=42)
+    parser.add_argument('--use-cross-attention', dest='use_cross_attention', action='store_true', default=True)
+    parser.add_argument('--no-cross-attention', dest='use_cross_attention', action='store_false')
+    parser.add_argument('--use-hybrid-attention', action='store_true', default=False,
+                        help="Use Pathway Attention for view 1")
     args = parser.parse_args()
+    
     
     fs = args.feature_selection_method
 
@@ -27,5 +32,6 @@ if __name__ == '__main__':
         attn_heads=args.attn_heads,
         lambda_contrast=args.lambda_contrast,
         seed=args.seed,
-        fs_method=fs
+        fs_method=fs,
+        use_cross_attention=args.use_cross_attention
     )

@@ -17,6 +17,7 @@ def train_test_CLCLSA(
     lr=1e-3, epochs=200, hidden_dims=[400,200],
     latent_dim=128, attn_heads=4, lambda_contrast=0.25,
     test_interval=10, seed=42, fs_method=None,
+    use_cross_attention=True # Added parameter with default True
 ):
     set_seed(seed)
     # Load data
@@ -106,7 +107,7 @@ def train_test_CLCLSA(
     num_views  = len(view_list)
     model      = HypergraphCLCLSA(
         input_dims, hidden_dims, latent_dim,
-        num_views, num_class, attn_heads
+        num_views, num_class, attn_heads,use_cross_attention=use_cross_attention # Pass the flag to the model
     ).to(device)
     optimizer  = torch.optim.Adam(model.parameters(), lr=lr)
     criterion  = torch.nn.CrossEntropyLoss()
