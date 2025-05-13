@@ -48,6 +48,9 @@ def prepare_trte_data(data_folder, view_list):
     num_tr = data_tr_list[0].shape[0]
     num_te = data_te_list[0].shape[0]
 
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(device)
+
     # Combine train and test for each view into one tensor
     data_tensor_list = []
     for i in range(num_view):

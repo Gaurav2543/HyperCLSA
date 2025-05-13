@@ -1,0 +1,14 @@
+{
+  "graph_method": "radius",                
+  "k_neigs": 6,                         
+  "radius_eps": 0.696573230951862,                    
+  "latent_dim": 64,                    
+  "attn_heads": 1,                      
+  "hidden1": 400,                       
+  "hidden2": 256,                       
+  "lr": 0.0018717267107673911,                          
+  "weight_decay": 0.000877872150373703,                 
+  "lambda_contrast": 0.29547396996824615,               
+  "fs_method": "boruta",                
+  "boruta_max_iter": 60         
+}

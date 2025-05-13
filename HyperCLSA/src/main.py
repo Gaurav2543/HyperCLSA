@@ -1,4 +1,4 @@
-import wandb
+# import wandb
 from train import train_test_CLCLSA
 from utils import logger, set_seed
 
@@ -17,8 +17,9 @@ if __name__ == "__main__":
         "lambda_contrast": 0.29547396996824615,               
         "fs_method": "boruta",                # "rfe" or "boruta"
         "boruta_max_iter": 60,                # if using boruta
-        "rfe_k": 500,                       # if using rfe
-        "rfe_step": 0.1,
+        # "rfe_k": 500,                       # if using rfe
+        # "rfe_step": 0.1,
+        # "shap_k": 500                       # ← SET THESE if using shap
     }
 
     # ─── Resolve fs_kwargs based on fs_method ───
@@ -27,20 +28,19 @@ if __name__ == "__main__":
         fs_kwargs = {"max_iter": best_params["boruta_max_iter"]}
     elif fs_method == "rfe":
         fs_kwargs = {"k": best_params["rfe_k"], "step": best_params["rfe_step"]}
+    elif fs_method == "shap":
+        fs_kwargs = {"k": best_params["shap_k"]}
     else:
         raise ValueError("Invalid fs_method")
 
     # ─── Log with wandb ───
-    wandb.init(project="HyperCLSA", config=best_params)
+    # wandb.init(project="HyperCLSA", config=best_params)
 
     # ─── Set seed and run ───
     set_seed(42)
     metrics = train_test_CLCLSA(
-        data_folder="BRCA",
-        # data_folder="ROSMAP",
+        data_folder="ROSMAP",
         view_list=[1, 2, 3],
-        # view_list=[2,3],
-        # num_class=2,
         num_class=5,
         lr=best_params["lr"],
         epochs=5000,
@@ -56,6 +56,6 @@ if __name__ == "__main__":
         n_splits_cv=5
     )
 
-    wandb.log(metrics)
-    wandb.finish()
+    # wandb.log(metrics)
+    # wandb.finish()
     logger.info(f"Final evaluation: macro-F1 = {metrics['mean_f1_macro']:.4f}")
