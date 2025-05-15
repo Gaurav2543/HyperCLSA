@@ -1,4 +1,4 @@
-# Multi-Omics Hypergraph Neural Network Framework
+# HyperCLSA: A Hypergraph Contrastive Learning Pipeline for Multi-Omics Data Integration
 
 This repository provides two frameworks for multi-omics data analysis:
 
